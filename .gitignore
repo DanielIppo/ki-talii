@@ -1,0 +1,32 @@
+# Credenziali e configurazioni locali sensibili
+.env
+.env.local
+.env.*.local
+config.yaml
+
+# Bytecode e cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Ambienti virtuali
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Configurazioni IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Log e file temporanei
+*.log
+debug_logs/

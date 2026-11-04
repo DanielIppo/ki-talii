@@ -1,0 +1,65 @@
+# ==============================================================================
+# KI-TALII - CONFIGURAZIONE ESEMPIO (config.example.yaml)
+# Copia questo file in 'config.yaml' per personalizzare le regole dei tuoi progetti.
+# Le credenziali (URL, Token, Utente) possono essere inserite nel file '.env'.
+# ==============================================================================
+
+kimai:
+  base_url: "${KIMAI_BASE_URL}"
+  token: "${KIMAI_TOKEN}"
+  username: "${KIMAI_USERNAME}"
+
+activitywatcher:
+  base_url: "${ACTIVITYWATCHER_BASE_URL}"
+
+settings:
+  # ID Attività predefinita: 18 = Sviluppo, 19 = Assistenza, 20 = Sistemistica
+  default_activity_id: 18
+  
+  # Tolleranza micro-pausa (secondi) prima di interrompere un blocco (300s = 5 minuti)
+  max_gap_seconds: 300
+  
+  # Max pausa tra blocchi dello stesso progetto per la fusione automatica (1800s = 30 min)
+  max_merge_gap_seconds: 1800
+  
+  # Durata minima (secondi) per creare un blocco (120s = 2 minuti)
+  min_duration_seconds: 120
+
+  # Tag predefinito su Kimai
+  tag: "ki-talii"
+
+# Applicazioni da ignorare (in minuscolo)
+ignored_apps:
+  - "whatsapp.root.exe"
+  - "whatsapp.exe"
+  - "telegram.exe"
+  - "discord.exe"
+  - "spotify.exe"
+  - "lockapp.exe"
+  - "shellexperiencehost.exe"
+  - "applicationframehost.exe"
+  - "taskmgr.exe"
+  - "screentogif.exe"
+
+# Titoli di finestre da ignorare (Regex case-insensitive)
+ignored_patterns:
+  - "^(Nuova scheda|New Tab) - (Google Chrome|Brave|Microsoft​ Edge)$"
+  - "Task Switching"
+  - "Blocco note"
+  - "Calcolatrice"
+
+# Regole di associazione Progetto / Attività
+# Inserisci qui le parole chiave che compaiono nei titoli delle finestre dei tuoi progetti
+rules:
+  - name: "Esempio - Sito Web Cliente A"
+    project_id: 10
+    activity_id: 18 # Sviluppo
+    patterns:
+      - "(?i)clientea"
+      - "(?i)cartella-progetto"
+
+  - name: "Esempio - Assistenza Cliente B"
+    project_id: 20
+    activity_id: 19 # Assistenza
+    patterns:
+      - "(?i)clienteb"
