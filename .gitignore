@@ -27,6 +27,11 @@ venv.bak/
 *.swo
 *~
 
+# PyInstaller / Build artifacts
+dist/
+build/
+*.spec
+
 # Log e file temporanei
 *.log
 debug_logs/
