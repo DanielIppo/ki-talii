@@ -69,7 +69,7 @@ def load_settings() -> Dict[str, Any]:
     # Se esiste il file settings.json utente, carica quello
     if os.path.exists(settings_file):
         try:
-            with open(settings_file, "r", encoding="utf-8") as f:
+            with open(settings_file, "r", encoding="utf-8-sig") as f:
                 saved = json.load(f)
                 defaults.update(saved)
         except Exception as e:
