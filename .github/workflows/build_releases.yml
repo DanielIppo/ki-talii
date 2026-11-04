@@ -1,0 +1,147 @@
+name: Auto Release & Build (Windows & Linux)
+
+on:
+  push:
+    branches: [ executable ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Calculate Version & Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump_version.outputs.new_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate Next Version
+        id: bump_version
+        run: |
+          git fetch --tags --force
+          LATEST_TAG=$(git tag -l --sort=-v:refname | head -n 1)
+          echo "Ultimo tag trovato: $LATEST_TAG"
+
+          python3 -c "
+          import os
+          tag = '$LATEST_TAG'.strip()
+          if not tag:
+              new_tag = '1.0'
+          else:
+              prefix = 'v' if tag.startswith('v') else ''
+              clean = tag.lstrip('v')
+              parts = clean.split('.')
+              try:
+                  major = int(parts[0])
+                  minor = int(parts[1]) if len(parts) > 1 else 0
+                  if minor >= 9:
+                      major += 1
+                      minor = 0
+                  else:
+                      minor += 1
+                  new_tag = f'{prefix}{major}.{minor}'
+              except Exception:
+                  new_tag = '1.1'
+
+          print(f'Nuovo tag generato: {new_tag}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'new_tag={new_tag}\n')
+          "
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_TAG="${{ steps.bump_version.outputs.new_tag }}"
+          gh release create "$NEW_TAG" \
+            --title "Release $NEW_TAG" \
+            --notes "Release automatica generata da push sul branch executable." \
+            --target "$GITHUB_SHA"
+
+  build-windows:
+    name: Build Windows Installer (.exe)
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress
+
+      - name: Build Executable with PyInstaller
+        run: |
+          pyinstaller --onedir --windowed --name "ki-talii" --collect-all customtkinter --noconfirm gui.py
+          copy config.example.yaml dist\ki-talii\
+
+      - name: Build Windows Installer with Inno Setup
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${{ needs.create-release.outputs.tag }}" packaging\windows\installer.iss
+
+      - name: Create Portable ZIP
+        run: |
+          Compress-Archive -Path dist\ki-talii\* -DestinationPath dist\ki-talii-windows-portable.zip
+
+      - name: Upload Windows Setup Artifact to Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: ki-talii-windows-setup
+          path: packaging/windows/Output/*.exe
+
+      - name: Attach Windows Installer & Portable to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.tag }}" packaging\windows\Output\*.exe dist\ki-talii-windows-portable.zip --clobber
+
+  build-linux-deb:
+    name: Build Linux .deb Package
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y dpkg-dev python3-tk
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Run Debian packaging script
+        run: |
+          chmod +x packaging/linux/build_deb.sh
+          bash packaging/linux/build_deb.sh "${{ needs.create-release.outputs.tag }}"
+
+      - name: Upload Linux .deb Artifact to Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: ki-talii-linux-deb
+          path: "*.deb"
+
+      - name: Attach Linux .deb to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.tag }}" *.deb --clobber
