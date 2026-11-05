@@ -27,7 +27,7 @@ from settings_manager import (
     export_kimai_projects_to_file
 )
 
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 
 def get_resource_path(relative_path: str) -> str:
@@ -984,15 +984,17 @@ class ModernAwToKimaiApp(ctk.CTk):
             no_data.pack(pady=40)
         else:
             for b in matched:
-                total_kimai_secs += b.active_duration
+                total_kimai_secs += b.total_span_seconds
                 proj_info = self.projects_cache.get(b.project_id, {})
                 proj_name = proj_info.get("name") or b.rule_name
                 cust_name = proj_info.get("customer", "-")
                 act_name = self.activities_cache.get(b.activity_id, f"Attività #{b.activity_id}")
 
                 time_span = f"{b.start.strftime('%H:%M')} - {b.end.strftime('%H:%M')}"
-                dur_str = format_duration(b.active_duration)
-                details = " | ".join(b.sample_titles[:3]) if b.sample_titles else ", ".join(list(b.apps)[:2])
+                dur_str = format_duration(b.total_span_seconds)
+                active_str = f"[Attivo: {format_duration(b.active_duration)}]"
+                raw_details = " | ".join(b.sample_titles[:3]) if b.sample_titles else ", ".join(list(b.apps)[:2])
+                details = f"{active_str} {raw_details}" if raw_details else active_str
 
                 row = ctk.CTkFrame(self.scroll_matched, corner_radius=8, fg_color=("gray92", "#23272d"), height=46)
                 row.pack(fill="x", pady=3, padx=2)
@@ -1066,11 +1068,12 @@ class ModernAwToKimaiApp(ctk.CTk):
             no_unmatched.pack(pady=40)
         else:
             for b in unmatched:
-                total_unmatched_secs += b.active_duration
+                total_unmatched_secs += b.total_span_seconds
                 time_span = f"{b.start.strftime('%H:%M')} - {b.end.strftime('%H:%M')}"
-                dur_str = format_duration(b.active_duration)
+                dur_str = format_duration(b.total_span_seconds)
                 apps_str = ", ".join(list(b.apps)[:3])
-                titles_str = " | ".join(b.sample_titles[:3])
+                raw_titles = " | ".join(b.sample_titles[:3])
+                titles_str = f"[Attivo: {format_duration(b.active_duration)}] {raw_titles}" if raw_titles else f"[Attivo: {format_duration(b.active_duration)}]"
 
                 row = ctk.CTkFrame(self.scroll_unmatched, corner_radius=8, fg_color=("gray92", "#23272d"), height=46)
                 row.pack(fill="x", pady=3, padx=2)
@@ -1127,8 +1130,9 @@ class ModernAwToKimaiApp(ctk.CTk):
             messagebox.showerror("Errore Kimai", "Configurazione Kimai non valida. Verifica in Impostazioni.")
             return
 
-        total_secs = sum(b.active_duration for b in self.matched_blocks)
-        dur_text = format_duration(total_secs)
+        total_secs = sum(b.total_span_seconds for b in self.matched_blocks)
+        total_active = sum(b.active_duration for b in self.matched_blocks)
+        dur_text = f"{format_duration(total_secs)} (attivo: {format_duration(total_active)})"
         date_str = self.current_date.strftime("%d/%m/%Y")
 
         confirm = messagebox.askyesno(

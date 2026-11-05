@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
+from copy import deepcopy
 
 
 @dataclass
@@ -106,6 +107,22 @@ class EventClassifier:
         return ClassifiedEvent(start, end, duration, app_clean, title_clean, status="unmatched")
 
 
+NEUTRAL_DEV_APPS = {
+    "dbeaver.exe", "soffice.bin", "excel.exe", "postman.exe", "insomnia.exe",
+    "docker desktop.exe", "lens.exe"
+}
+
+
+def is_neutral_developer_tool(app: str, title: str) -> bool:
+    app_lower = app.lower()
+    title_lower = title.lower()
+    if app_lower in NEUTRAL_DEV_APPS:
+        return True
+    if any(k in title_lower for k in ["swagger", "devtools", "keycloak"]):
+        return True
+    return False
+
+
 class IntervalMerger:
     def __init__(self, config: Dict[str, Any]):
         settings = config.get("settings", {})
@@ -113,46 +130,107 @@ class IntervalMerger:
         self.max_merge_gap_seconds = settings.get("max_merge_gap_seconds", 1800)  # Max pausa tra blocchi stesso progetto (30 min)
         self.min_duration_seconds = settings.get("min_duration_seconds", 120)  # Minimo 2 minuti di lavoro
 
+    def _apply_context_inheritance(self, events: List[ClassifiedEvent]) -> List[ClassifiedEvent]:
+        """
+        Tool di sviluppo neutri (DBeaver, Calc, DevTools, Swagger) usati durante lo sviluppo
+        ereditano automaticamente il progetto in corso anziché finire in 'Non riconosciuto'.
+        """
+        result: List[ClassifiedEvent] = []
+        for ev in events:
+            ev_c = deepcopy(ev)
+            if ev_c.status == "unmatched" and is_neutral_developer_tool(ev_c.app, ev_c.title):
+                for p in reversed(result):
+                    if p.status == "matched":
+                        gap = (ev_c.start - p.end).total_seconds()
+                        if gap <= 1200:  # Entro 20 minuti dall'ultima attività del progetto
+                            ev_c.status = "matched"
+                            ev_c.project_id = p.project_id
+                            ev_c.activity_id = p.activity_id
+                            ev_c.rule_name = p.rule_name
+                        break
+            result.append(ev_c)
+        return result
+
+    def _smooth_fleeting_noise(self, events: List[ClassifiedEvent]) -> List[ClassifiedEvent]:
+        """
+        Filtra schede in background o click accidentali (< 25 secondi) di un altro progetto
+        quando ci si trova all'interno di una sessione di lavoro continua.
+        """
+        smoothed: List[ClassifiedEvent] = []
+        n = len(events)
+        for i, ev in enumerate(events):
+            ev_c = deepcopy(ev)
+            if ev_c.status == "matched" and ev_c.duration < 25:
+                prev_p = None
+                for p in reversed(smoothed):
+                    if p.status == "matched":
+                        prev_p = p
+                        break
+                next_p = None
+                for j in range(i + 1, min(i + 15, n)):
+                    if events[j].status == "matched":
+                        next_p = events[j]
+                        break
+                if (prev_p and next_p and 
+                    prev_p.project_id == next_p.project_id and 
+                    prev_p.project_id != ev_c.project_id):
+                    # Click accidentale / scheda browser di un altro progetto rimasta aperta
+                    ev_c.project_id = prev_p.project_id
+                    ev_c.activity_id = prev_p.activity_id
+                    ev_c.rule_name = prev_p.rule_name
+            smoothed.append(ev_c)
+        return smoothed
+
+    def _apply_meeting_continuation(self, events: List[ClassifiedEvent]) -> List[ClassifiedEvent]:
+        """
+        Assicura che durante una call (Google Meet, Teams, Zoom) gli eventi correlati
+        entro 10 minuti mantengano l'attività 'Call' e il progetto della chiamata.
+        """
+        in_call_project = None
+        last_call_time = None
+        for ev in events:
+            is_call = ev.activity_id == 4 or "meet" in ev.title.lower() or "teams" in ev.title.lower() or "zoom" in ev.title.lower()
+            if is_call and ev.status == "matched":
+                in_call_project = (ev.project_id, ev.rule_name)
+                last_call_time = ev.end
+            elif in_call_project and last_call_time:
+                gap = (ev.start - last_call_time).total_seconds()
+                if gap <= 600:
+                    if any(k in ev.title.lower() for k in ["meet", "google meet", "teams", "zoom"]):
+                        ev.status = "matched"
+                        ev.project_id = in_call_project[0]
+                        ev.activity_id = 4
+                        ev.rule_name = in_call_project[1]
+                        last_call_time = ev.end
+                else:
+                    in_call_project = None
+        return events
+
     def merge_events(self, events: List[ClassifiedEvent]) -> List[TimesheetBlock]:
         """
         Raggruppa gli eventi sequenziali in blocchi orari reali,
-        fondendo micro-passaggi tra finestre dello stesso progetto
-        e interrompendo i blocchi solo su cambi effettivi di progetto o lunghe pause.
+        applicando Context Inheritance, Noise Smoothing e consolidamento
+        con supporto alle attività parallele (Opzione B).
         """
         if not events:
             return []
 
+        # 1. Applicazione filtri intelligenti e context inheritance
+        events_step1 = self._apply_context_inheritance(events)
+        events_step2 = self._smooth_fleeting_noise(events_step1)
+        cleaned_events = self._apply_meeting_continuation(events_step2)
+
+        # 2. Aggregazione sequenziale in raw blocks
         blocks: List[TimesheetBlock] = []
-        current_block: Optional[TimesheetBlock] = None
+        curr: Optional[TimesheetBlock] = None
 
-        i = 0
-        n = len(events)
-
-        while i < n:
-            ev = events[i]
-
-            # Se l'evento è ignorato (es. WhatsApp, blocco schermo)
+        for ev in cleaned_events:
             if ev.status == "ignored":
-                # Controlla se è una distrazione momentanea durante un blocco in corso
-                if current_block and not current_block.is_unmatched:
-                    # Cerca in avanti se l'utente ritorna allo stesso progetto a breve
-                    next_matched = self._find_next_matched(events, i + 1, self.max_gap_seconds, current_block.end)
-                    if next_matched and next_matched.project_id == current_block.project_id:
-                        # Breve pausa/distrazione tollerata: non chiudiamo il blocco principale
-                        i += 1
-                        continue
-                    else:
-                        # Il lavoro sul blocco corrente si è interrotto
-                        blocks.append(current_block)
-                        current_block = None
-                i += 1
                 continue
 
-            # Evento con Match su Progetto
             if ev.status == "matched":
-                if current_block is None:
-                    # Inizia un nuovo blocco
-                    current_block = TimesheetBlock(
+                if curr is None:
+                    curr = TimesheetBlock(
                         project_id=ev.project_id,
                         activity_id=ev.activity_id,
                         rule_name=ev.rule_name or f"Progetto #{ev.project_id}",
@@ -164,24 +242,21 @@ class IntervalMerger:
                         is_unmatched=False
                     )
                 else:
-                    # C'è già un blocco attivo
-                    if (current_block.project_id == ev.project_id and 
-                        current_block.activity_id == ev.activity_id and
-                        not current_block.is_unmatched):
+                    if (not curr.is_unmatched and 
+                        curr.project_id == ev.project_id and 
+                        curr.activity_id == ev.activity_id):
                         
-                        gap = (ev.start - current_block.end).total_seconds()
+                        gap = (ev.start - curr.end).total_seconds()
                         if gap <= self.max_gap_seconds:
-                            # Estende il blocco corrente
-                            current_block.end = max(current_block.end, ev.end)
-                            current_block.active_duration += ev.duration
+                            curr.end = max(curr.end, ev.end)
+                            curr.active_duration += ev.duration
                             if ev.app:
-                                current_block.apps.add(ev.app)
-                            if ev.title and ev.title not in current_block.sample_titles and len(current_block.sample_titles) < 5:
-                                current_block.sample_titles.append(ev.title)
+                                curr.apps.add(ev.app)
+                            if ev.title and ev.title not in curr.sample_titles and len(curr.sample_titles) < 6:
+                                curr.sample_titles.append(ev.title)
                         else:
-                            # Pausa troppo lunga: chiudi il blocco precedente e aprine uno nuovo
-                            blocks.append(current_block)
-                            current_block = TimesheetBlock(
+                            blocks.append(curr)
+                            curr = TimesheetBlock(
                                 project_id=ev.project_id,
                                 activity_id=ev.activity_id,
                                 rule_name=ev.rule_name or f"Progetto #{ev.project_id}",
@@ -193,9 +268,8 @@ class IntervalMerger:
                                 is_unmatched=False
                             )
                     else:
-                        # Cambio progetto: chiudi il vecchio blocco
-                        blocks.append(current_block)
-                        current_block = TimesheetBlock(
+                        blocks.append(curr)
+                        curr = TimesheetBlock(
                             project_id=ev.project_id,
                             activity_id=ev.activity_id,
                             rule_name=ev.rule_name or f"Progetto #{ev.project_id}",
@@ -206,29 +280,13 @@ class IntervalMerger:
                             sample_titles=[ev.title] if ev.title else [],
                             is_unmatched=False
                         )
-
-            # Evento Unmatched (non riconosciuto)
             elif ev.status == "unmatched":
-                if current_block and not current_block.is_unmatched:
-                    # Verifichiamo se è una breve consultazione (es. browser generico o DBeaver)
-                    # prima di ritornare allo stesso progetto
-                    next_matched = self._find_next_matched(events, i + 1, self.max_gap_seconds, current_block.end)
-                    if next_matched and next_matched.project_id == current_block.project_id:
-                        # Fa parte del contesto del progetto in corso
-                        current_block.end = max(current_block.end, ev.end)
-                        current_block.active_duration += ev.duration
-                        if ev.app:
-                            current_block.apps.add(ev.app)
-                        i += 1
-                        continue
-                    else:
-                        # Chiusura del blocco di progetto
-                        blocks.append(current_block)
-                        current_block = None
+                if curr and not curr.is_unmatched:
+                    blocks.append(curr)
+                    curr = None
 
-                # Creazione/estensione blocco unmatched
-                if current_block is None:
-                    current_block = TimesheetBlock(
+                if curr is None:
+                    curr = TimesheetBlock(
                         project_id=None,
                         activity_id=None,
                         rule_name="[NON RICONOSCIUTO]",
@@ -240,17 +298,17 @@ class IntervalMerger:
                         is_unmatched=True
                     )
                 else:
-                    gap = (ev.start - current_block.end).total_seconds()
+                    gap = (ev.start - curr.end).total_seconds()
                     if gap <= self.max_gap_seconds:
-                        current_block.end = max(current_block.end, ev.end)
-                        current_block.active_duration += ev.duration
+                        curr.end = max(curr.end, ev.end)
+                        curr.active_duration += ev.duration
                         if ev.app:
-                            current_block.apps.add(ev.app)
-                        if ev.title and ev.title not in current_block.sample_titles and len(current_block.sample_titles) < 5:
-                            current_block.sample_titles.append(ev.title)
+                            curr.apps.add(ev.app)
+                        if ev.title and ev.title not in curr.sample_titles and len(curr.sample_titles) < 6:
+                            curr.sample_titles.append(ev.title)
                     else:
-                        blocks.append(current_block)
-                        current_block = TimesheetBlock(
+                        blocks.append(curr)
+                        curr = TimesheetBlock(
                             project_id=None,
                             activity_id=None,
                             rule_name="[NON RICONOSCIUTO]",
@@ -262,76 +320,63 @@ class IntervalMerger:
                             is_unmatched=True
                         )
 
-            i += 1
+        if curr:
+            blocks.append(curr)
 
-        if current_block:
-            blocks.append(current_block)
+        # 3. Consolidamento avanzato dei blocchi dello stesso progetto (Opzione B: Record Paralleli)
+        consolidated = self._consolidate_blocks(blocks)
 
-        # 1. Filtra blocchi brevissimi (sotto la soglia minima di secondi)
-        filtered_blocks = [
-            b for b in blocks if b.active_duration >= self.min_duration_seconds
+        # 4. Filtro finale per durata minima
+        return [
+            b for b in consolidated 
+            if b.active_duration >= self.min_duration_seconds or (b.activity_id == 4 and b.total_span_seconds >= 300)
         ]
 
-        # 2. Consolidamento blocchi dello stesso progetto:
-        # Se non ci sono altri progetti intermedi e la pausa è sotto max_merge_gap_seconds,
-        # fonde i blocchi in un unico intervallo continuo.
-        return self._consolidate_blocks(filtered_blocks)
-
     def _consolidate_blocks(self, blocks: List[TimesheetBlock]) -> List[TimesheetBlock]:
+        """
+        Fonde blocchi dello stesso progetto entro max_merge_gap_seconds (30 min),
+        saltando blocchi non riconosciuti intermedi o micro-interruzioni (< 120s) di altri progetti.
+        Permette la generazione di blocchi paralleli/sovrapposti puliti.
+        """
         if not blocks:
             return []
 
         consolidated: List[TimesheetBlock] = []
-        curr = blocks[0]
+        i = 0
 
-        for nxt in blocks[1:]:
-            # Se entrambi sono matched e appartengono allo stesso progetto e attività
-            if (not curr.is_unmatched and not nxt.is_unmatched and
-                curr.project_id == nxt.project_id and
-                curr.activity_id == nxt.activity_id):
-                
-                gap = (nxt.start - curr.end).total_seconds()
-                if gap <= self.max_merge_gap_seconds:
-                    # Fonde nxt nel blocco curr
-                    curr.end = max(curr.end, nxt.end)
-                    curr.active_duration += nxt.active_duration
-                    curr.apps.update(nxt.apps)
-                    for t in nxt.sample_titles:
-                        if t not in curr.sample_titles and len(curr.sample_titles) < 6:
-                            curr.sample_titles.append(t)
+        while i < len(blocks):
+            b = blocks[i]
+            if b.is_unmatched:
+                consolidated.append(b)
+                i += 1
+                continue
+
+            j = i + 1
+            while j < len(blocks):
+                nxt = blocks[j]
+                # Salta blocchi non riconosciuti o micro-interruzioni (< 120s) di altri progetti
+                if nxt.is_unmatched or (nxt.project_id != b.project_id and nxt.active_duration < self.min_duration_seconds):
+                    gap = (nxt.end - b.end).total_seconds()
+                    if gap > self.max_merge_gap_seconds:
+                        break
+                    j += 1
                     continue
 
-            # Se entrambi sono unmatched contigui entro la pausa
-            elif curr.is_unmatched and nxt.is_unmatched:
-                gap = (nxt.start - curr.end).total_seconds()
-                if gap <= self.max_merge_gap_seconds:
-                    curr.end = max(curr.end, nxt.end)
-                    curr.active_duration += nxt.active_duration
-                    curr.apps.update(nxt.apps)
-                    for t in nxt.sample_titles:
-                        if t not in curr.sample_titles and len(curr.sample_titles) < 6:
-                            curr.sample_titles.append(t)
-                    continue
+                # Se troviamo un blocco dello stesso progetto e attività
+                if nxt.project_id == b.project_id and nxt.activity_id == b.activity_id:
+                    gap = (nxt.start - b.end).total_seconds()
+                    if gap <= self.max_merge_gap_seconds:
+                        b.end = max(b.end, nxt.end)
+                        b.active_duration += nxt.active_duration
+                        b.apps.update(nxt.apps)
+                        for t in nxt.sample_titles:
+                            if t not in b.sample_titles and len(b.sample_titles) < 6:
+                                b.sample_titles.append(t)
+                        blocks.pop(j)
+                        continue
+                break
 
-            consolidated.append(curr)
-            curr = nxt
+            consolidated.append(b)
+            i += 1
 
-        consolidated.append(curr)
         return consolidated
-
-    def _find_next_matched(
-        self,
-        events: List[ClassifiedEvent],
-        start_index: int,
-        max_gap_seconds: float,
-        last_end: datetime
-    ) -> Optional[ClassifiedEvent]:
-        """Cerca il prossimo evento 'matched' entro un intervallo di tempo ragionevole."""
-        for j in range(start_index, len(events)):
-            ev = events[j]
-            gap = (ev.start - last_end).total_seconds()
-            if gap > max_gap_seconds:
-                return None
-            if ev.status == "matched":
-                return ev
-        return None

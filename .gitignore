@@ -37,3 +37,8 @@ packaging/windows/Output/
 # Log e file temporanei
 *.log
 debug_logs/
+scratch/
+scratch_*
+*.tmp
+analysis_*.txt
+inspect_*.txt

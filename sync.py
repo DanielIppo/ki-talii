@@ -132,21 +132,24 @@ def print_blocks_table(matched: List[TimesheetBlock], unmatched: List[TimesheetB
 
     if matched:
         print(f"\n[✓] BLOCCHI PRONTI PER KIMAI ({len(matched)} intervalli):")
-        print(f"{'Inizio - Fine':<17} {'Tempo Lav.':<12} {'Progetto (ID)':<28} {'Attività (ID)':<15}")
+        print(f"{'Inizio - Fine':<17} {'Durata':<10} {'Attivo':<10} {'Progetto (ID)':<28} {'Attività (ID)':<15}")
         print("-" * 80)
-        total_time = 0.0
+        total_span = 0.0
+        total_act = 0.0
         for b in matched:
             time_span = f"{b.start.strftime('%H:%M')} - {b.end.strftime('%H:%M')}"
-            dur = format_duration(b.active_duration)
+            dur = format_duration(b.total_span_seconds)
+            act = format_duration(b.active_duration)
             proj_str = f"{b.rule_name} (#{b.project_id})"[:26]
             act_str = f"Attività #{b.activity_id}"
-            print(f"{time_span:<17} {dur:<12} {proj_str:<28} {act_str:<15}")
+            print(f"{time_span:<17} {dur:<10} {act:<10} {proj_str:<28} {act_str:<15}")
             if b.sample_titles:
                 titles_preview = " | ".join(b.sample_titles[:2])
                 print(f"   └─ Finestre: {titles_preview[:70]}")
-            total_time += b.active_duration
+            total_span += b.total_span_seconds
+            total_act += b.active_duration
         print("-" * 80)
-        print(f"Tempo totale tracciato: {format_duration(total_time)}")
+        print(f"Tempo totale Kimai (SPAN): {format_duration(total_span)} (Attivo effettivo: {format_duration(total_act)})")
 
     if unmatched:
         print(f"\n[?] ATTIVITÀ NON RICONOSCIUTE ({len(unmatched)} intervalli):")
@@ -214,7 +217,7 @@ def sync_to_kimai(
                 description=description,
                 tags=tag
             )
-            print(f"  [INVIATO ✓] {b.start.strftime('%H:%M')} - {b.end.strftime('%H:%M')}: {b.rule_name} ({format_duration(b.active_duration)})")
+            print(f"  [INVIATO ✓] {b.start.strftime('%H:%M')} - {b.end.strftime('%H:%M')}: {b.rule_name} ({format_duration(b.total_span_seconds)}, attivo: {format_duration(b.active_duration)})")
             inserted += 1
         except Exception as e:
             print(f"  [ERRORE X] Fallita creazione per {b.rule_name}: {e}")
