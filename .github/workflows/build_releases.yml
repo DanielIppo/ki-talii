@@ -58,6 +58,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NEW_TAG="${{ steps.bump_version.outputs.new_tag }}"
+          gh release delete "$NEW_TAG" --yes || true
           gh release create "$NEW_TAG" \
             --title "Release $NEW_TAG" \
             --notes "Release automatica generata da push sul branch executable." \
@@ -87,7 +88,7 @@ jobs:
 
       - name: Build Executable with PyInstaller
         run: |
-          pyinstaller --onedir --windowed --name "ki-talii" --collect-all customtkinter --noconfirm gui.py
+          pyinstaller --onedir --windowed --name "ki-talii" --icon "assets/icon.ico" --add-data "assets;assets" --collect-all customtkinter --noconfirm gui.py
           copy config.example.yaml dist\ki-talii\
 
       - name: Build Windows Installer with Inno Setup

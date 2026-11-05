@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 import tkinter as tk
 from tkinter import messagebox, filedialog
 import customtkinter as ctk
+from PIL import Image
 
 from kimai_client import KimaiClient
 from aw_client import ActivityWatcherClient
@@ -25,6 +26,27 @@ from settings_manager import (
     open_activitywatcher_download_page,
     export_kimai_projects_to_file
 )
+
+APP_VERSION = "1.1"
+
+
+def get_resource_path(relative_path: str) -> str:
+    """
+    Restituisce il percorso assoluto di una risorsa, compatibile con PyInstaller e dev locale.
+    """
+    if getattr(sys, 'frozen', False):
+        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    path = os.path.join(base_dir, relative_path)
+    if os.path.exists(path):
+        return path
+
+    alt_path = os.path.join(os.path.dirname(sys.executable), relative_path)
+    if os.path.exists(alt_path):
+        return alt_path
+    return path
 
 
 def format_duration(seconds: float) -> str:
@@ -145,11 +167,22 @@ class SettingsDialog(ctk.CTkToplevel):
     """Finestra Impostazioni: configurazione credenziali Kimai, file regole e export progetti."""
     def __init__(self, parent, on_save_callback):
         super().__init__(parent)
-        self.title("Impostazioni - ki-talii")
+        self.title(f"Impostazioni - ki-talii v{APP_VERSION}")
         self.geometry("640x660")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+
+        ico_file = get_resource_path(os.path.join("assets", "icon.ico"))
+        png_file = get_resource_path(os.path.join("assets", "icon.png"))
+        try:
+            if sys.platform.startswith('win') and os.path.exists(ico_file):
+                self.iconbitmap(ico_file)
+            elif os.path.exists(png_file):
+                img = tk.PhotoImage(file=png_file)
+                self.iconphoto(False, img)
+        except Exception:
+            pass
 
         self.on_save_callback = on_save_callback
         self.settings = load_settings()
@@ -410,14 +443,34 @@ class ModernAwToKimaiApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Registrazione ID processo per Windows Taskbar
+        if sys.platform.startswith('win'):
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"kitalii.timesheet.sync.{APP_VERSION}")
+            except Exception:
+                pass
+
         self.settings = load_settings()
         theme_mode = self.settings.get("theme", "dark")
         ctk.set_appearance_mode(theme_mode)
         ctk.set_default_color_theme("blue")
 
-        self.title("ki-talii ➔ Kimai Sincronizzatore")
+        self.title(f"ki-talii v{APP_VERSION} ➔ Kimai Sincronizzatore")
         self.geometry("1180x760")
         self.minsize(980, 580)
+
+        # Icona finestra applicazione
+        ico_file = get_resource_path(os.path.join("assets", "icon.ico"))
+        png_file = get_resource_path(os.path.join("assets", "icon.png"))
+        try:
+            if sys.platform.startswith('win') and os.path.exists(ico_file):
+                self.iconbitmap(ico_file)
+            elif os.path.exists(png_file):
+                img = tk.PhotoImage(file=png_file)
+                self.iconphoto(False, img)
+        except Exception as e:
+            print(f"[AVVISO] Impossibile impostare icona finestra: {e}")
 
         # Configurazione unificata
         self.config = load_config()
@@ -530,12 +583,24 @@ class ModernAwToKimaiApp(ctk.CTk):
         self.header_frame = ctk.CTkFrame(self, corner_radius=0, height=65)
         self.header_frame.pack(fill="x", side="top")
 
+        # Logo brand con icona Trinacria
+        self.logo_ctk = None
+        png_file = get_resource_path(os.path.join("assets", "icon.png"))
+        if os.path.exists(png_file):
+            try:
+                pil_logo = Image.open(png_file)
+                self.logo_ctk = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(28, 28))
+            except Exception as e:
+                print(f"[AVVISO] Impossibile caricare logo header: {e}")
+
         lbl_brand = ctk.CTkLabel(
             self.header_frame,
-            text="⚡ ki-talii",
+            text="  ki-talii" if self.logo_ctk else "⚡ ki-talii",
+            image=self.logo_ctk,
+            compound="left",
             font=ctk.CTkFont(size=18, weight="bold")
         )
-        lbl_brand.pack(side="left", padx=(20, 20))
+        lbl_brand.pack(side="left", padx=(15, 20))
 
         # Navigazione Data
         btn_prev = ctk.CTkButton(
@@ -687,7 +752,15 @@ class ModernAwToKimaiApp(ctk.CTk):
             font=ctk.CTkFont(size=12),
             text_color=("gray30", "gray70")
         )
-        self.lbl_status.pack(side="left", padx=25)
+        self.lbl_status.pack(side="left", padx=(25, 10))
+
+        lbl_version_badge = ctk.CTkLabel(
+            bottom_frame,
+            text=f"v{APP_VERSION}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=("gray50", "gray50")
+        )
+        lbl_version_badge.pack(side="left", padx=5)
 
         self.btn_send_kimai = ctk.CTkButton(
             bottom_frame,

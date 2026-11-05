@@ -36,9 +36,9 @@ Esegui sul tuo sistema Linux:
 chmod +x packaging/linux/build_deb.sh
 ./packaging/linux/build_deb.sh
 ```
-Verrà generato il pacchetto `ki-talii_1.0.0_amd64.deb` installabile con:
+Verrà generato il pacchetto `ki-talii_1.1_amd64.deb` installabile con:
 ```bash
-sudo dpkg -i ki-talii_1.0.0_amd64.deb
+sudo dpkg -i ki-talii_1.1_amd64.deb
 ```
 
 ### 🚀 Compilazione Automatica su GitHub Actions

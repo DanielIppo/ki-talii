@@ -5,7 +5,7 @@ set -e
 # Script di creazione pacchetto .deb per Linux (Debian, Ubuntu, Mint, Pop!_OS)
 # ==============================================================================
 
-RAW_VER="${1:-1.0}"
+RAW_VER="${1:-1.1}"
 VERSION="${RAW_VER#v}"
 PACKAGE_NAME="ki-talii"
 ARCH="amd64"
@@ -14,8 +14,8 @@ BUILD_ROOT="$(pwd)/packaging/linux/build_${PACKAGE_NAME}_${VERSION}_${ARCH}"
 DEB_NAME="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
 
 echo "==> [1/4] Compilazione con PyInstaller su Linux..."
-python3 -m pip install -r requirements.txt pyinstaller customtkinter pyyaml requests
-python3 -m PyInstaller --onedir --windowed --name "ki-talii" --collect-all customtkinter --noconfirm gui.py
+python3 -m pip install -r requirements.txt pyinstaller customtkinter pyyaml requests pillow
+python3 -m PyInstaller --onedir --windowed --name "ki-talii" --add-data "assets:assets" --collect-all customtkinter --noconfirm gui.py
 
 echo "==> [2/4] Preparazione struttura filesystem Debian..."
 rm -rf "${BUILD_ROOT}"
@@ -23,11 +23,16 @@ mkdir -p "${BUILD_ROOT}/DEBIAN"
 mkdir -p "${BUILD_ROOT}/opt/${PACKAGE_NAME}"
 mkdir -p "${BUILD_ROOT}/usr/bin"
 mkdir -p "${BUILD_ROOT}/usr/share/applications"
-mkdir -p "${BUILD_ROOT}/usr/share/icons/hicolor/scalable/apps"
+mkdir -p "${BUILD_ROOT}/usr/share/icons/hicolor/256x256/apps"
+mkdir -p "${BUILD_ROOT}/usr/share/pixmaps"
 
 # Copia i binari compilati in /opt/ki-talii
 cp -r "${DIST_DIR}/"* "${BUILD_ROOT}/opt/${PACKAGE_NAME}/"
 cp config.example.yaml "${BUILD_ROOT}/opt/${PACKAGE_NAME}/"
+
+# Copia icone per desktop e menu di sistema
+cp assets/icon.png "${BUILD_ROOT}/usr/share/icons/hicolor/256x256/apps/ki-talii.png"
+cp assets/icon.png "${BUILD_ROOT}/usr/share/pixmaps/ki-talii.png"
 
 # Launcher eseguibile in /usr/bin/ki-talii
 cat << 'EOF' > "${BUILD_ROOT}/usr/bin/ki-talii"
