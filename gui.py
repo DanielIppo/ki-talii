@@ -27,7 +27,7 @@ from settings_manager import (
     export_kimai_projects_to_file
 )
 
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 
 def get_resource_path(relative_path: str) -> str:

@@ -127,54 +127,68 @@ class IntervalMerger:
     def __init__(self, config: Dict[str, Any]):
         settings = config.get("settings", {})
         self.max_gap_seconds = settings.get("max_gap_seconds", 300)  # Micro-pause tollerate (5 minuti)
-        self.max_merge_gap_seconds = settings.get("max_merge_gap_seconds", 1800)  # Max pausa tra blocchi stesso progetto (30 min)
+        self.max_merge_gap_seconds = settings.get("max_merge_gap_seconds", 1200)  # Max pausa tra blocchi stesso progetto (20 min)
         self.min_duration_seconds = settings.get("min_duration_seconds", 120)  # Minimo 2 minuti di lavoro
+        self.blip_threshold_seconds = 25  # Soglia sotto la quale un blocco è un micro-click isolato e non estende sessioni oltre i 5 min
 
     def _apply_context_inheritance(self, events: List[ClassifiedEvent]) -> List[ClassifiedEvent]:
         """
-        Tool di sviluppo neutri (DBeaver, Calc, DevTools, Swagger) usati durante lo sviluppo
-        ereditano automaticamente il progetto in corso anziché finire in 'Non riconosciuto'.
+        Tool di sviluppo neutri (DBeaver, Calc, DevTools, Swagger, Lens) usati durante lo sviluppo
+        ereditano automaticamente il progetto dominante nella finestra temporale precedente (15 min),
+        evitando di ereditare click accidentali o schede secondarie.
         """
         result: List[ClassifiedEvent] = []
         for ev in events:
             ev_c = deepcopy(ev)
             if ev_c.status == "unmatched" and is_neutral_developer_tool(ev_c.app, ev_c.title):
+                project_durations: Dict[Tuple[int, int, str], float] = {}
+                project_last: Dict[Tuple[int, int, str], ClassifiedEvent] = {}
                 for p in reversed(result):
-                    if p.status == "matched":
-                        gap = (ev_c.start - p.end).total_seconds()
-                        if gap <= 1200:  # Entro 20 minuti dall'ultima attività del progetto
-                            ev_c.status = "matched"
-                            ev_c.project_id = p.project_id
-                            ev_c.activity_id = p.activity_id
-                            ev_c.rule_name = p.rule_name
+                    gap = (ev_c.start - p.end).total_seconds()
+                    if gap > 900:  # Finestra di 15 minuti
                         break
+                    if p.status == "matched":
+                        key = (p.project_id, p.activity_id, p.rule_name)
+                        project_durations[key] = project_durations.get(key, 0.0) + p.duration
+                        if key not in project_last:
+                            project_last[key] = p
+
+                if project_durations:
+                    best_key = max(project_durations.keys(), key=lambda k: project_durations[k])
+                    if project_durations[best_key] >= self.blip_threshold_seconds:
+                        best_p = project_last[best_key]
+                        ev_c.status = "matched"
+                        ev_c.project_id = best_p.project_id
+                        ev_c.activity_id = best_p.activity_id
+                        ev_c.rule_name = best_p.rule_name
             result.append(ev_c)
         return result
 
     def _smooth_fleeting_noise(self, events: List[ClassifiedEvent]) -> List[ClassifiedEvent]:
         """
-        Filtra schede in background o click accidentali (< 25 secondi) di un altro progetto
-        quando ci si trova all'interno di una sessione di lavoro continua.
+        Filtra schede in background o click accidentali (< 15 secondi) di un altro progetto
+        quando ci si trova all'interno di una sessione continua di un unico progetto.
         """
         smoothed: List[ClassifiedEvent] = []
         n = len(events)
         for i, ev in enumerate(events):
             ev_c = deepcopy(ev)
-            if ev_c.status == "matched" and ev_c.duration < 25:
+            if ev_c.status == "matched" and ev_c.duration < 15:
                 prev_p = None
                 for p in reversed(smoothed):
                     if p.status == "matched":
                         prev_p = p
                         break
                 next_p = None
-                for j in range(i + 1, min(i + 15, n)):
+                for j in range(i + 1, min(i + 10, n)):
                     if events[j].status == "matched":
                         next_p = events[j]
                         break
                 if (prev_p and next_p and 
                     prev_p.project_id == next_p.project_id and 
-                    prev_p.project_id != ev_c.project_id):
-                    # Click accidentale / scheda browser di un altro progetto rimasta aperta
+                    prev_p.project_id != ev_c.project_id and
+                    prev_p.activity_id != 4):
+                    # Click fugace nel mezzo di una sessione coerente
                     ev_c.project_id = prev_p.project_id
                     ev_c.activity_id = prev_p.activity_id
                     ev_c.rule_name = prev_p.rule_name
@@ -334,9 +348,11 @@ class IntervalMerger:
 
     def _consolidate_blocks(self, blocks: List[TimesheetBlock]) -> List[TimesheetBlock]:
         """
-        Fonde blocchi dello stesso progetto entro max_merge_gap_seconds (30 min),
-        saltando blocchi non riconosciuti intermedi o micro-interruzioni (< 120s) di altri progetti.
-        Permette la generazione di blocchi paralleli/sovrapposti puliti.
+        Fonde blocchi dello stesso progetto entro max_merge_gap_seconds (20 min).
+        Supporta la registrazione parallela (Opzione B) senza che progetti concorrenti
+        spezzino sessioni continue.
+        Include protezione anti-micro-blip: blocchi con attività inferiore a blip_threshold_seconds (< 25s)
+        non possono fungere da ponte né estendere sessioni attraverso pause > 5 minuti.
         """
         if not blocks:
             return []
@@ -354,26 +370,38 @@ class IntervalMerger:
             j = i + 1
             while j < len(blocks):
                 nxt = blocks[j]
-                # Salta blocchi non riconosciuti o micro-interruzioni (< 120s) di altri progetti
-                if nxt.is_unmatched or (nxt.project_id != b.project_id and nxt.active_duration < self.min_duration_seconds):
-                    gap = (nxt.end - b.end).total_seconds()
-                    if gap > self.max_merge_gap_seconds:
-                        break
+                gap = (nxt.start - b.end).total_seconds()
+                if gap > self.max_merge_gap_seconds:
+                    break
+
+                # Opzione B (Record Paralleli):
+                # Se nxt appartiene a un altro progetto o non è riconosciuto,
+                # continuiamo a scorrere per trovare blocchi dello stesso progetto senza spezzarlo.
+                if nxt.is_unmatched or nxt.project_id != b.project_id:
                     j += 1
                     continue
 
                 # Se troviamo un blocco dello stesso progetto e attività
                 if nxt.project_id == b.project_id and nxt.activity_id == b.activity_id:
-                    gap = (nxt.start - b.end).total_seconds()
-                    if gap <= self.max_merge_gap_seconds:
-                        b.end = max(b.end, nxt.end)
-                        b.active_duration += nxt.active_duration
-                        b.apps.update(nxt.apps)
-                        for t in nxt.sample_titles:
-                            if t not in b.sample_titles and len(b.sample_titles) < 6:
-                                b.sample_titles.append(t)
-                        blocks.pop(j)
+                    # Protezione Anti-Micro-Blip:
+                    # 1. Se il blocco 'b' ha lavorato meno della soglia e il gap è > 5 minuti,
+                    # è un click isolato e non può estendersi su una sessione futura.
+                    if gap > 300 and b.active_duration < self.blip_threshold_seconds:
+                        break
+                    # 2. Se 'nxt' ha lavorato meno della soglia e il gap è > 5 minuti,
+                    # è un click isolato e non deve tirare indietro o allungare la sessione.
+                    if gap > 300 and nxt.active_duration < self.blip_threshold_seconds:
+                        j += 1
                         continue
+
+                    b.end = max(b.end, nxt.end)
+                    b.active_duration += nxt.active_duration
+                    b.apps.update(nxt.apps)
+                    for t in nxt.sample_titles:
+                        if t not in b.sample_titles and len(b.sample_titles) < 6:
+                            b.sample_titles.append(t)
+                    blocks.pop(j)
+                    continue
                 break
 
             consolidated.append(b)
