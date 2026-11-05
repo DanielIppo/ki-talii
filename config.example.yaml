@@ -19,8 +19,8 @@ settings:
   # Tolleranza micro-pausa (secondi) prima di interrompere un blocco (300s = 5 minuti)
   max_gap_seconds: 300
   
-  # Max pausa tra blocchi dello stesso progetto per la fusione automatica (1800s = 30 min)
-  max_merge_gap_seconds: 1800
+  # Max pausa tra blocchi dello stesso progetto per la fusione automatica (1200s = 20 min)
+  max_merge_gap_seconds: 1200
   
   # Durata minima (secondi) per creare un blocco (120s = 2 minuti)
   min_duration_seconds: 120
